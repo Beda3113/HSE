@@ -70,64 +70,101 @@ current_index = 0
 text_embedder = nn.Embedding(1000, 128).to(device)
 generator = Generator().to(device)
 
-# Безопасная загрузка модели
-if os.path.exists("model_epoch_0.pth"):
-    try:
-        # Сначала пробуем безопасный режим
-        checkpoint = torch.load("model_epoch_0.pth", map_location=device, weights_only=True)
-    except Exception as e:
-        print(f"Предупреждение: Не удалось загрузить с weights_only=True. Ошибка: {e}")
-        print("Пробуем загрузить с weights_only=False (только для доверенных моделей!)")
-        checkpoint = torch.load("model_epoch_0.pth", map_location=device, weights_only=False)
-        
-        # Конвертируем в безопасный формат для будущего использования
-        safe_checkpoint = {
-            'generator_state_dict': checkpoint['generator_state_dict'],
-            'metadata': {
-                'converted_from_unsafe': True,
-                'conversion_date': str(datetime.now())
-            }
-        }
-        torch.save(safe_checkpoint, "model_safe.pth", _use_new_zipfile_serialization=True)
-        print("Модель сохранена в безопасном формате как 'model_safe.pth'")
+# --- Улучшенная загрузка модели ---
+def load_model_safely(model_path, device):
+    """Безопасная загрузка модели с несколькими fallback-методами"""
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Файл модели {model_path} не найден")
     
+    # Метод 1: Попытка стандартной загрузки с weights_only=True
     try:
-        generator.load_state_dict(checkpoint['generator_state_dict'])
-        print("Модель успешно загружена")
-    except KeyError:
-        raise KeyError("Checkpoint должен содержать ключ 'generator_state_dict'")
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+        print("Модель загружена в безопасном режиме (weights_only=True)")
+        return checkpoint
     except Exception as e:
-        raise RuntimeError(f"Ошибка загрузки состояния модели: {str(e)}")
+        print(f"Не удалось загрузить в безопасном режиме: {str(e)}")
+    
+    # Метод 2: Попытка загрузки через safetensors (если файл .safetensors)
+    if model_path.endswith('.safetensors'):
+        try:
+            from safetensors.torch import load_file
+            return load_file(model_path, device=device)
+        except ImportError:
+            print("safetensors не установлен, пропускаем этот метод")
+        except Exception as e:
+            print(f"Ошибка загрузки safetensors: {str(e)}")
+    
+    # Метод 3: Загрузка с weights_only=False (только для доверенных моделей)
+    try:
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        print("Модель загружена с weights_only=False (небезопасный режим)")
+        
+        # Автоматическая конвертация в безопасный формат
+        safe_path = model_path.replace(".pth", "_safe.safetensors")
+        try:
+            from safetensors.torch import save_file
+            save_file({"generator_state_dict": checkpoint["generator_state_dict"]}, safe_path)
+            print(f"Модель сохранена в безопасном формате: {safe_path}")
+        except Exception as e:
+            print(f"Не удалось сохранить safetensors: {str(e)}")
+        
+        return checkpoint
+    except Exception as e:
+        raise RuntimeError(f"Не удалось загрузить модель: {str(e)}")
+
+# Загрузка модели
+try:
+    checkpoint = load_model_safely("model_epoch_0.pth", device)
+    generator.load_state_dict(checkpoint['generator_state_dict'])
+    print("Модель успешно загружена и инициализирована")
+except KeyError:
+    raise KeyError("Checkpoint должен содержать ключ 'generator_state_dict'")
+except Exception as e:
+    raise RuntimeError(f"Критическая ошибка загрузки модели: {str(e)}")
 
 generator.eval()
 
-# --- Генерация cGAN ---
+# --- Улучшенная генерация изображений ---
 def generate_cgan_images(label, count=5):
     global current_index
+    
+    if not isinstance(label, str) or len(label) == 0:
+        raise ValueError("Название логотипа должно быть непустой строкой")
+    
     if label not in TEXT_TO_INDEX:
         TEXT_TO_INDEX[label] = current_index
         current_index += 1
 
     images = []
+    os.makedirs(RESULT_DIR, exist_ok=True)
+
     with torch.no_grad():
-        noise = torch.randn(count, 100, device=device)
-        text_idx = torch.tensor([TEXT_TO_INDEX[label]] * count, device=device)
-        text_emb = text_embedder(text_idx)
-        image_tensors = generator(noise, text_emb)
-        image_tensors = (image_tensors + 1) / 2  # нормализация [0..1]
-        
-        os.makedirs(RESULT_DIR, exist_ok=True)  # Убедимся, что директория существует
-        
-        for i in range(count):
-            img_tensor = image_tensors[i].unsqueeze(0)
-            path = f"{RESULT_DIR}/cgan_{label}_{i}.png"
-            try:
-                vutils.save_image(img_tensor, path)
-                images.append(path)
-            except Exception as e:
-                print(f"Ошибка при сохранении изображения {i}: {str(e)}")
-                continue
-                
+        try:
+            # Генерация тензоров
+            noise = torch.randn(count, 100, device=device)
+            text_idx = torch.tensor([TEXT_TO_INDEX[label]] * count, device=device)
+            text_emb = text_embedder(text_idx)
+            image_tensors = generator(noise, text_emb)
+            image_tensors = (image_tensors + 1) / 2  # нормализация [0..1]
+            
+            # Сохранение изображений
+            for i in range(count):
+                try:
+                    img_tensor = image_tensors[i].unsqueeze(0)
+                    path = os.path.join(RESULT_DIR, f"cgan_{label}_{i}.png")
+                    vutils.save_image(img_tensor, path)
+                    images.append(path)
+                except Exception as e:
+                    print(f"Ошибка при сохранении изображения {i}: {str(e)}")
+                    continue
+                    
+        except RuntimeError as e:
+            if 'CUDA out of memory' in str(e):
+                torch.cuda.empty_cache()
+                print("Очистка памяти CUDA и повторная попытка...")
+                return generate_cgan_images(label, count)
+            raise
+            
     return images
 
 # --- Апскейл через Real-ESRGAN ---
