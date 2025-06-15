@@ -70,9 +70,35 @@ current_index = 0
 text_embedder = nn.Embedding(1000, 128).to(device)
 generator = Generator().to(device)
 
+# Безопасная загрузка модели
 if os.path.exists("model_epoch_0.pth"):
-    checkpoint = torch.load("model_epoch_0.pth", map_location=device, weights_only=True)
-    generator.load_state_dict(checkpoint['generator_state_dict'])
+    try:
+        # Сначала пробуем безопасный режим
+        checkpoint = torch.load("model_epoch_0.pth", map_location=device, weights_only=True)
+    except Exception as e:
+        print(f"Предупреждение: Не удалось загрузить с weights_only=True. Ошибка: {e}")
+        print("Пробуем загрузить с weights_only=False (только для доверенных моделей!)")
+        checkpoint = torch.load("model_epoch_0.pth", map_location=device, weights_only=False)
+        
+        # Конвертируем в безопасный формат для будущего использования
+        safe_checkpoint = {
+            'generator_state_dict': checkpoint['generator_state_dict'],
+            'metadata': {
+                'converted_from_unsafe': True,
+                'conversion_date': str(datetime.now())
+            }
+        }
+        torch.save(safe_checkpoint, "model_safe.pth", _use_new_zipfile_serialization=True)
+        print("Модель сохранена в безопасном формате как 'model_safe.pth'")
+    
+    try:
+        generator.load_state_dict(checkpoint['generator_state_dict'])
+        print("Модель успешно загружена")
+    except KeyError:
+        raise KeyError("Checkpoint должен содержать ключ 'generator_state_dict'")
+    except Exception as e:
+        raise RuntimeError(f"Ошибка загрузки состояния модели: {str(e)}")
+
 generator.eval()
 
 # --- Генерация cGAN ---
@@ -89,11 +115,19 @@ def generate_cgan_images(label, count=5):
         text_emb = text_embedder(text_idx)
         image_tensors = generator(noise, text_emb)
         image_tensors = (image_tensors + 1) / 2  # нормализация [0..1]
+        
+        os.makedirs(RESULT_DIR, exist_ok=True)  # Убедимся, что директория существует
+        
         for i in range(count):
             img_tensor = image_tensors[i].unsqueeze(0)
             path = f"{RESULT_DIR}/cgan_{label}_{i}.png"
-            vutils.save_image(img_tensor, path)
-            images.append(path)
+            try:
+                vutils.save_image(img_tensor, path)
+                images.append(path)
+            except Exception as e:
+                print(f"Ошибка при сохранении изображения {i}: {str(e)}")
+                continue
+                
     return images
 
 # --- Апскейл через Real-ESRGAN ---
