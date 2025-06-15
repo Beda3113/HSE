@@ -21,7 +21,7 @@ RUN mkdir -p /app/lora && \
     wget -q --show-progress -O /app/lora/buzzer.safetensors "https://civitai.tech/api/download/models/86033?type=Model&format=SafeTensor" && \
     wget -q --show-progress -O /app/lora/coffee_style.safetensors "https://civitai.tech/api/download/models/108396?type=Model&format=SafeTensor" && \
     wget -q --show-progress -O /app/lora/additional_style1.safetensors "https://civitai.tech/api/download/models/40999?type=Model&format=SafeTensor" && \
-    wget -q --show-progress -O /app/lora/additional_style2.safetensors "https://civitai.tech/api/download/models/232254?type=Model&format=SafeTensor" && \
+    wget -q --show-progress -O /app/lora/additional_style2.safetensors "https://civitai.tech/api/download/models/87697?type=Model&format=SafeTensor" && \
     echo "Проверка загруженных файлов..." && \
     ls -lh /app/lora/ && \
     file /app/lora/*.safetensors
