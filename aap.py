@@ -43,129 +43,70 @@ fastapi_app.add_middleware(
     allow_headers=["*"]
 )
 
-# --- Генератор cGAN ---
+# ------------------------------------------
+# 1. Генератор cGAN
+# ------------------------------------------
 class Generator(nn.Module):
     def __init__(self, z_dim=100, text_embedding_dim=128, output_channels=3):
-        super().__init__()
+        super(Generator, self).__init__()
         self.text_embedding_dim = text_embedding_dim
         self.model = nn.Sequential(
             nn.ConvTranspose2d(z_dim + text_embedding_dim, 256, kernel_size=4, stride=1, padding=0),
-            nn.BatchNorm2d(256), nn.ReLU(True),
+            nn.BatchNorm2d(256),
+            nn.ReLU(True),
             nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128), nn.ReLU(True),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64), nn.ReLU(True),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
             nn.ConvTranspose2d(64, output_channels, kernel_size=4, stride=2, padding=1),
             nn.Tanh()
         )
 
-    def forward(self, z: torch.Tensor, text_embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, z, text_embedding):
         combined = torch.cat([z, text_embedding], dim=1).view(z.size(0), -1, 1, 1)
         return self.model(combined)
 
-# --- Инициализация моделей ---
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# ------------------------------------------
+# 2. Инициализация моделей
+# ------------------------------------------
 TEXT_TO_INDEX = {}
 current_index = 0
 text_embedder = nn.Embedding(1000, 128).to(device)
 generator = Generator().to(device)
 
-# --- Улучшенная загрузка модели ---
-def load_model_safely(model_path, device):
-    """Безопасная загрузка модели с несколькими fallback-методами"""
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Файл модели {model_path} не найден")
-    
-    # Метод 1: Попытка стандартной загрузки с weights_only=True
-    try:
-        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-        print("Модель загружена в безопасном режиме (weights_only=True)")
-        return checkpoint
-    except Exception as e:
-        print(f"Не удалось загрузить в безопасном режиме: {str(e)}")
-    
-    # Метод 2: Попытка загрузки через safetensors (если файл .safetensors)
-    if model_path.endswith('.safetensors'):
-        try:
-            from safetensors.torch import load_file
-            return load_file(model_path, device=device)
-        except ImportError:
-            print("safetensors не установлен, пропускаем этот метод")
-        except Exception as e:
-            print(f"Ошибка загрузки safetensors: {str(e)}")
-    
-    # Метод 3: Загрузка с weights_only=False (только для доверенных моделей)
-    try:
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-        print("Модель загружена с weights_only=False (небезопасный режим)")
-        
-        # Автоматическая конвертация в безопасный формат
-        safe_path = model_path.replace(".pth", "_safe.safetensors")
-        try:
-            from safetensors.torch import save_file
-            save_file({"generator_state_dict": checkpoint["generator_state_dict"]}, safe_path)
-            print(f"Модель сохранена в безопасном формате: {safe_path}")
-        except Exception as e:
-            print(f"Не удалось сохранить safetensors: {str(e)}")
-        
-        return checkpoint
-    except Exception as e:
-        raise RuntimeError(f"Не удалось загрузить модель: {str(e)}")
-
-# Загрузка модели
-try:
-    checkpoint = load_model_safely("model_epoch_0.pth", device)
+if os.path.exists("model_epoch_0.pth"):
+    checkpoint = torch.load("model_epoch_0.pth", map_location=device)
     generator.load_state_dict(checkpoint['generator_state_dict'])
-    print("Модель успешно загружена и инициализирована")
-except KeyError:
-    raise KeyError("Checkpoint должен содержать ключ 'generator_state_dict'")
-except Exception as e:
-    raise RuntimeError(f"Критическая ошибка загрузки модели: {str(e)}")
-
 generator.eval()
 
-# --- Улучшенная генерация изображений ---
+# ------------------------------------------
+# 3. Генерация 5 изображений через cGAN
+# ------------------------------------------
 def generate_cgan_images(label, count=5):
     global current_index
-    
-    if not isinstance(label, str) or len(label) == 0:
-        raise ValueError("Название логотипа должно быть непустой строкой")
-    
     if label not in TEXT_TO_INDEX:
         TEXT_TO_INDEX[label] = current_index
         current_index += 1
 
     images = []
-    os.makedirs(RESULT_DIR, exist_ok=True)
-
     with torch.no_grad():
-        try:
-            # Генерация тензоров
-            noise = torch.randn(count, 100, device=device)
-            text_idx = torch.tensor([TEXT_TO_INDEX[label]] * count, device=device)
-            text_emb = text_embedder(text_idx)
-            image_tensors = generator(noise, text_emb)
-            image_tensors = (image_tensors + 1) / 2  # нормализация [0..1]
-            
-            # Сохранение изображений
-            for i in range(count):
-                try:
-                    img_tensor = image_tensors[i].unsqueeze(0)
-                    path = os.path.join(RESULT_DIR, f"cgan_{label}_{i}.png")
-                    vutils.save_image(img_tensor, path)
-                    images.append(path)
-                except Exception as e:
-                    print(f"Ошибка при сохранении изображения {i}: {str(e)}")
-                    continue
-                    
-        except RuntimeError as e:
-            if 'CUDA out of memory' in str(e):
-                torch.cuda.empty_cache()
-                print("Очистка памяти CUDA и повторная попытка...")
-                return generate_cgan_images(label, count)
-            raise
-            
+        noise = torch.randn(count, 100, device=device)
+        text_idx = torch.tensor([TEXT_TO_INDEX[label]] * count, device=device)
+        text_emb = text_embedder(text_idx)
+
+        image_tensors = generator(noise, text_emb)
+        image_tensors = (image_tensors + 1) / 2  # нормализация [0..1]
+
+        for i in range(count):
+            img_tensor = image_tensors[i].unsqueeze(0)
+            path = f"{RESULT_DIR}/cgan_{label}_{i}.png"
+            vutils.save_image(img_tensor, path)
+            images.append(path)
     return images
+
 
 # --- Апскейл через Real-ESRGAN ---
 def init_real_upscaler():
