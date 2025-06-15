@@ -1,0 +1,19 @@
+services:
+  logo-generator:
+    build: .
+    runtime: nvidia
+    ports:
+      - "8501:8501"  # Streamlit
+      - "8001:8001"  # FastAPI
+    volumes:
+      - ./output:/app/output
+      - ./lora:/app/lora
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
