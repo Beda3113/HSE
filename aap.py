@@ -43,6 +43,17 @@ fastapi_app.add_middleware(
     allow_headers=["*"]
 )
 
+
+
+import torch
+import torch.nn as nn
+from torch import optim
+
+# Добавьте это:
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+
 # ------------------------------------------
 # 1. Генератор cGAN
 # ------------------------------------------
